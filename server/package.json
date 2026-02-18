@@ -9,5 +9,8 @@
   },
   "devDependencies": {
     "@types/bun": "latest"
+  },
+  "dependencies": {
+    "effect": "^3.19.18"
   }
 }
