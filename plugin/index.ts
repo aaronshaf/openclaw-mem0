@@ -119,7 +119,7 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
     api.on("agent_end", async (event, _ctx) => {
       const ev = event as { success?: boolean; messages?: Array<{ role: string; content: unknown }> }
       if (!ev.success || !ev.messages?.length) return
-      const recent = ev.messages.slice(-10).filter((m) => m.role === "user" || m.role === "assistant")
+      const recent = ev.messages.slice(-6).filter((m) => m.role === "user" || m.role === "assistant")
       if (recent.length === 0) return
       const contentToString = (content: unknown): string => {
         if (typeof content === "string") return content
@@ -139,9 +139,10 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
         }
         return String(content)
       }
+      const MAX_CONTENT = 500
       const formatted = recent
         .map((m) => {
-          const text = contentToString(m.content).trim()
+          const text = contentToString(m.content).trim().slice(0, MAX_CONTENT)
           if (!text) return null
           return `${m.role === "assistant" ? "Assistant" : "User"}: ${text}`
         })
