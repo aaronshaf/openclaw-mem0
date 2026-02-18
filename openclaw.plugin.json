@@ -1,0 +1,16 @@
+{
+  "id": "openclaw-mem0-rest",
+  "kind": "memory",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "url": { "type": "string" },
+      "userId": { "type": "string" },
+      "autoCapture": { "type": "boolean" },
+      "autoRecall": { "type": "boolean" },
+      "topK": { "type": "number" }
+    },
+    "required": ["url", "userId"]
+  }
+}
