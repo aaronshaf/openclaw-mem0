@@ -1,0 +1,15 @@
+[Unit]
+Description=openclaw-mem0 memory server
+After=network.target
+
+[Service]
+ExecStart=/home/shaf/.bun/bin/bun run /home/shaf/openclaw-mem0-server/index.ts
+WorkingDirectory=/home/shaf/openclaw-mem0-server
+Restart=always
+RestartSec=3
+Environment=QDRANT_URL=http://localhost:6333
+Environment=OLLAMA_URL=http://localhost:11434
+Environment=PORT=7890
+
+[Install]
+WantedBy=default.target

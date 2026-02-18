@@ -1,0 +1,13 @@
+{
+  "name": "openclaw-mem0-server",
+  "version": "0.1.0",
+  "description": "Bun TypeScript memory server for openclaw-mem0",
+  "scripts": {
+    "start": "bun run index.ts",
+    "dev": "bun --watch index.ts",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  }
+}
