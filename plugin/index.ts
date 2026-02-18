@@ -152,6 +152,43 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
         })
 
       mem0
+        .command("add")
+        .description("Manually store a memory")
+        .argument("<text>", "Text to store as memory")
+        .action(async (text: string) => {
+          const results = await mem0Add(cfg.url, text, cfg.userId).catch((e) => {
+            console.error(`Error: ${String(e)}`)
+            process.exit(1)
+          })
+          if (!results.length) { console.log("No memories extracted."); return }
+          results.forEach((r, i) => console.log(`${i + 1}. stored: ${r.memory}`))
+        })
+
+      mem0
+        .command("delete")
+        .description("Delete a memory by ID")
+        .argument("<id>", "Memory ID")
+        .action(async (id: string) => {
+          const res = await fetch(`${cfg.url}/memories/${id}`, { method: "DELETE" }).catch((e) => {
+            console.error(`Error: ${String(e)}`); process.exit(1)
+          })
+          const data = await res.json() as { success?: boolean; error?: string }
+          if (data.success) { console.log(`Deleted ${id}`) } else { console.error(`Error: ${data.error}`); process.exit(1) }
+        })
+
+      mem0
+        .command("list")
+        .description("List all memories")
+        .action(async () => {
+          const res = await fetch(`${cfg.url}/memories?user_id=${cfg.userId}`).catch((e) => {
+            console.error(`Error: ${String(e)}`); process.exit(1)
+          })
+          const data = await res.json() as { memories?: Array<{ id: string; memory: string }> }
+          if (!data.memories?.length) { console.log("No memories."); return }
+          data.memories.forEach((m, i) => console.log(`${i + 1}. [${m.id}] ${m.memory}`))
+        })
+
+      mem0
         .command("stats")
         .description("Health check and memory count")
         .action(async () => {
