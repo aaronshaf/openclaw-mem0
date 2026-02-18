@@ -117,12 +117,35 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
 
   if (cfg.autoCapture) {
     api.on("agent_end", async (event, _ctx) => {
-      const ev = event as { success?: boolean; messages?: Array<{ role: string; content: string }> }
+      const ev = event as { success?: boolean; messages?: Array<{ role: string; content: unknown }> }
       if (!ev.success || !ev.messages?.length) return
       const recent = ev.messages.slice(-10).filter((m) => m.role === "user" || m.role === "assistant")
       if (recent.length === 0) return
+      const contentToString = (content: unknown): string => {
+        if (typeof content === "string") return content
+        if (Array.isArray(content)) {
+          return content
+            .map((block: unknown) => {
+              if (typeof block === "string") return block
+              if (typeof block === "object" && block !== null) {
+                const b = block as Record<string, unknown>
+                if (b.type === "text" && typeof b.text === "string") return b.text
+                if (b.type === "tool_result" || b.type === "tool_use") return "" // skip tool calls
+              }
+              return ""
+            })
+            .filter(Boolean)
+            .join(" ")
+        }
+        return String(content)
+      }
       const formatted = recent
-        .map((m) => `${m.role === "assistant" ? "Assistant" : "User"}: ${m.content}`)
+        .map((m) => {
+          const text = contentToString(m.content).trim()
+          if (!text) return null
+          return `${m.role === "assistant" ? "Assistant" : "User"}: ${text}`
+        })
+        .filter(Boolean)
         .join("\n")
       try {
         const results = await mem0Add(cfg.url, formatted, cfg.userId)
