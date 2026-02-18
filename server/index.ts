@@ -49,7 +49,7 @@ const AddRequestSchema = Schema.Struct({
 const SearchRequestSchema = Schema.Struct({
   query: Schema.String.pipe(Schema.maxLength(1000)),
   user_id: Schema.String,
-  limit: Schema.optional(Schema.Number.pipe(Schema.clamp({ minimum: 1, maximum: 100 }))),
+  limit: Schema.optional(Schema.Number.pipe(Schema.between(1, 100))),
 })
 
 // --- External API response schemas ---
