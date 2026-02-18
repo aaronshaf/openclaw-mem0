@@ -12,7 +12,16 @@ const PluginConfig = Schema.Struct({
 })
 type PluginConfig = Schema.Schema.Type<typeof PluginConfig>
 
-const decodeConfig = Schema.decodeUnknownSync(PluginConfig)
+function decodeConfig(raw: unknown): PluginConfig {
+  try {
+    return Schema.decodeUnknownSync(PluginConfig)(raw)
+  } catch (e) {
+    const msg = e instanceof Error ? e.message : String(e)
+    throw new Error(
+      `openclaw-mem0: invalid plugin config. Check that 'url' (string) and 'userId' (string) are set. Details: ${msg}`
+    )
+  }
+}
 
 // --- API response schemas ---
 
@@ -21,7 +30,6 @@ const SearchResult = Schema.Struct({
   memory: Schema.String,
   score: Schema.Number,
   user_id: Schema.optional(Schema.String),
-  agent_id: Schema.optional(Schema.String),
 })
 
 const SearchResponse = Schema.Struct({
@@ -42,9 +50,14 @@ const HealthResponse = Schema.Struct({
   status: Schema.String,
 })
 
+const CountResponse = Schema.Struct({
+  count: Schema.Number,
+})
+
 const decodeSearchResponse = Schema.decodeUnknownSync(SearchResponse)
 const decodeAddResponse = Schema.decodeUnknownSync(AddResponse)
 const decodeHealthResponse = Schema.decodeUnknownSync(HealthResponse)
+const decodeCountResponse = Schema.decodeUnknownSync(CountResponse)
 
 // --- HTTP helpers ---
 
@@ -64,8 +77,15 @@ async function mem0Search(baseUrl: string, query: string, userId: string, limit:
 }
 
 async function mem0Add(baseUrl: string, messages: string, userId: string) {
-  const raw = await postJson(`${baseUrl}/add`, { messages, agent_id: userId, user_id: userId })
+  const raw = await postJson(`${baseUrl}/add`, { messages, user_id: userId })
   return decodeAddResponse(raw).results
+}
+
+async function mem0Count(baseUrl: string, userId: string): Promise<number> {
+  const res = await fetch(`${baseUrl}/memories/count?user_id=${encodeURIComponent(userId)}`)
+  if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)
+  const raw = await res.json()
+  return decodeCountResponse(raw).count
 }
 
 // --- Plugin ---
@@ -140,12 +160,16 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
           })
           const health = decodeHealthResponse(await res.json())
           console.log(`Status: ${health.status}`)
-          const results = await mem0Search(cfg.url, "a", cfg.userId, 100).catch(() => [])
-          console.log(`Memories (approx): ${results.length}`)
+          try {
+            const count = await mem0Count(cfg.url, cfg.userId)
+            console.log(`Memories: ${count}`)
+          } catch (e) {
+            console.error(`Failed to get count: ${String(e)}`)
+          }
         })
     },
     { commands: ["mem0"] }
   )
 }
 
-export { mem0Search, mem0Add, decodeConfig, decodeSearchResponse, decodeAddResponse, decodeHealthResponse }
+export { mem0Search, mem0Add, mem0Count, decodeConfig, decodeSearchResponse, decodeAddResponse, decodeHealthResponse, decodeCountResponse }

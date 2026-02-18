@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
-import { decodeConfig, decodeSearchResponse, decodeAddResponse, decodeHealthResponse, mem0Search, mem0Add } from "./index"
+import { decodeConfig, decodeSearchResponse, decodeAddResponse, decodeHealthResponse, decodeCountResponse, mem0Search, mem0Add, mem0Count } from "./index"
 import plugin from "./index"
 
 // ---------------------------------------------------------------------------
@@ -19,24 +19,24 @@ describe("decodeConfig", () => {
     expect(cfg.topK).toBe(10)
   })
 
-  it("throws when url is missing", () => {
-    expect(() => decodeConfig({ userId: "u" })).toThrow()
+  it("throws a human-readable error when url is missing", () => {
+    expect(() => decodeConfig({ userId: "u" })).toThrow("invalid plugin config")
   })
 
-  it("throws when userId is missing", () => {
-    expect(() => decodeConfig({ url: "http://x" })).toThrow()
+  it("throws a human-readable error when userId is missing", () => {
+    expect(() => decodeConfig({ url: "http://x" })).toThrow("invalid plugin config")
   })
 
   it("throws when url is not a string", () => {
-    expect(() => decodeConfig({ url: 123, userId: "u" })).toThrow()
+    expect(() => decodeConfig({ url: 123, userId: "u" })).toThrow("invalid plugin config")
   })
 
   it("throws when userId is not a string", () => {
-    expect(() => decodeConfig({ url: "http://x", userId: 42 })).toThrow()
+    expect(() => decodeConfig({ url: "http://x", userId: 42 })).toThrow("invalid plugin config")
   })
 
   it("throws when topK is not a number", () => {
-    expect(() => decodeConfig({ url: "http://x", userId: "u", topK: "five" })).toThrow()
+    expect(() => decodeConfig({ url: "http://x", userId: "u", topK: "five" })).toThrow("invalid plugin config")
   })
 })
 
@@ -108,6 +108,24 @@ describe("decodeHealthResponse", () => {
 })
 
 // ---------------------------------------------------------------------------
+// decodeCountResponse
+// ---------------------------------------------------------------------------
+describe("decodeCountResponse", () => {
+  it("parses a valid count response", () => {
+    const res = decodeCountResponse({ count: 42 })
+    expect(res.count).toBe(42)
+  })
+
+  it("throws when count is missing", () => {
+    expect(() => decodeCountResponse({})).toThrow()
+  })
+
+  it("throws when count is not a number", () => {
+    expect(() => decodeCountResponse({ count: "many" })).toThrow()
+  })
+})
+
+// ---------------------------------------------------------------------------
 // mem0Search
 // ---------------------------------------------------------------------------
 describe("mem0Search", () => {
@@ -160,7 +178,7 @@ describe("mem0Add", () => {
     vi.unstubAllGlobals()
   })
 
-  it("POSTs to /add and returns results", async () => {
+  it("POSTs to /add without agent_id and returns results", async () => {
     const mockFetch = vi.fn().mockResolvedValue({
       ok: true,
       json: async () => ({ results: [{ id: "2", memory: "stored", event: "ADD" }] }),
@@ -172,7 +190,7 @@ describe("mem0Add", () => {
       "http://localhost:8000/add",
       expect.objectContaining({
         method: "POST",
-        body: JSON.stringify({ messages: "User: hello\nAssistant: hi", agent_id: "user1", user_id: "user1" }),
+        body: JSON.stringify({ messages: "User: hello\nAssistant: hi", user_id: "user1" }),
       })
     )
     expect(results[0].event).toBe("ADD")
@@ -181,6 +199,35 @@ describe("mem0Add", () => {
   it("throws on non-ok HTTP response", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 401, statusText: "Unauthorized" }))
     await expect(mem0Add("http://localhost:8000", "msg", "u")).rejects.toThrow("HTTP 401")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// mem0Count
+// ---------------------------------------------------------------------------
+describe("mem0Count", () => {
+  beforeEach(() => {
+    vi.stubGlobal("fetch", vi.fn())
+  })
+  afterEach(() => {
+    vi.unstubAllGlobals()
+  })
+
+  it("GETs /memories/count and returns count", async () => {
+    const mockFetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ count: 42 }),
+    })
+    vi.stubGlobal("fetch", mockFetch)
+
+    const count = await mem0Count("http://localhost:8000", "user1")
+    expect(mockFetch).toHaveBeenCalledWith("http://localhost:8000/memories/count?user_id=user1")
+    expect(count).toBe(42)
+  })
+
+  it("throws on non-ok response", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: "Error" }))
+    await expect(mem0Count("http://localhost:8000", "u")).rejects.toThrow("HTTP 500")
   })
 })
 
@@ -207,14 +254,14 @@ describe("plugin initialization", () => {
     )
   })
 
-  it("throws if config is invalid", async () => {
+  it("throws with human-readable error if config is invalid", async () => {
     const mockApi = {
       pluginConfig: { url: "http://localhost:8000" }, // missing userId
       logger: { info: vi.fn(), warn: vi.fn() },
       on: vi.fn(),
       registerCli: vi.fn(),
     }
-    await expect(plugin(mockApi as any)).rejects.toThrow()
+    await expect(plugin(mockApi as any)).rejects.toThrow("invalid plugin config")
   })
 
   it("does not register before_agent_start when autoRecall is false", async () => {
@@ -270,7 +317,6 @@ describe("autoRecall handler", () => {
       registerCli: vi.fn(),
     }
     await plugin(mockApi as any)
-    // Find the before_agent_start handler
     const call = mockApi.on.mock.calls.find((c: any[]) => c[0] === "before_agent_start")
     recallHandler = call[1]
   })
@@ -380,6 +426,9 @@ describe("autoCapture handler", () => {
       "http://localhost:8000/add",
       expect.objectContaining({ method: "POST" })
     )
+    // Verify no agent_id is sent
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    expect(body).not.toHaveProperty("agent_id")
     expect(mockApi.logger.info).toHaveBeenCalledWith(
       expect.stringContaining("captured 1 memory")
     )

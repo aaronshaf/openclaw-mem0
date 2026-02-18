@@ -11,7 +11,6 @@ export interface SearchResult {
   memory: string
   score: number
   user_id?: string
-  agent_id?: string
 }
 
 export interface SearchResponse {
@@ -21,7 +20,6 @@ export interface SearchResponse {
 export interface AddRequest {
   messages: string
   user_id: string
-  agent_id?: string
 }
 
 export interface AddResult {
@@ -32,6 +30,7 @@ export interface AddResult {
 
 export interface AddResponse {
   results: AddResult[]
+  failed?: number
 }
 
 export interface DeleteResponse {
@@ -40,13 +39,17 @@ export interface DeleteResponse {
 
 export interface HealthResponse {
   status: string
+  reason?: string
 }
 
 export interface Memory {
   id: string
   memory: string
   user_id?: string
-  agent_id?: string
   created_at?: string
   updated_at?: string
+}
+
+export interface CountResponse {
+  count: number
 }
