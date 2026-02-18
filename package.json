@@ -1,13 +1,14 @@
 {
   "name": "openclaw-mem0-rest",
   "version": "0.1.0",
-  "description": "openclaw memory plugin using mem0 REST API",
-  "main": "index.js",
-  "scripts": {
-    "build": "npx tsc"
+  "description": "openclaw memory plugin — calls mem0 REST API. Simple, no native deps.",
+  "main": "index.ts",
+  "scripts": {},
+  "dependencies": {
+    "effect": "^3.0.0"
   },
   "devDependencies": {
-    "@types/node": "^25.2.3",
-    "typescript": "^5.0.0"
+    "typescript": "^5.0.0",
+    "@types/node": "^20.0.0"
   }
 }
