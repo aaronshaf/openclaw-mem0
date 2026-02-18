@@ -147,3 +147,5 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
     { commands: ["mem0"] }
   )
 }
+
+export { mem0Search, mem0Add, decodeConfig, decodeSearchResponse, decodeAddResponse, decodeHealthResponse }
