@@ -114,9 +114,9 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
   }
 
   api.registerCli(
-    { name: "mem0", description: "mem0 memory commands" },
-    (program) => {
-      program
+    ({ program }: { program: any }) => {
+      const mem0 = program.command("mem0").description("mem0 memory commands")
+      mem0
         .command("search")
         .description("Search memories")
         .argument("<query>", "Search query")
@@ -131,7 +131,7 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
           results.forEach((r, i) => console.log(`${i + 1}. [${r.score.toFixed(3)}] ${r.memory}`))
         })
 
-      program
+      mem0
         .command("stats")
         .description("Health check and memory count")
         .action(async () => {
@@ -143,6 +143,7 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
           const results = await mem0Search(cfg.url, "a", cfg.userId, 100).catch(() => [])
           console.log(`Memories (approx): ${results.length}`)
         })
-    }
+    },
+    { commands: ["mem0"] }
   )
 }
