@@ -1,5 +1,8 @@
 import { describe, test, expect, beforeAll } from "bun:test"
 import { Effect, Layer } from "effect"
+import { http, HttpResponse } from "msw"
+import { mswServer } from "./test-setup"
+import { makeQdrantClientLive, makeOllamaClientLive } from "./infrastructure"
 import {
   QdrantClient,
   OllamaClient,
@@ -13,6 +16,11 @@ import {
   errorResponse,
 } from "./index"
 import type { QdrantClientService, OllamaClientService } from "./index"
+
+const QDRANT = "http://localhost:6333"
+const OLLAMA = "http://localhost:11434"
+const OPENAI_BASE = "http://openai-api.test"
+const COLLECTION = "memories"
 
 // --- Mock layers ---
 
@@ -50,6 +58,22 @@ function runWithQdrant<A>(
   overrides: Partial<QdrantClientService> = {}
 ): Promise<A> {
   return Effect.runPromise(Effect.provide(effect, makeMockQdrant(overrides)))
+}
+
+function runWithLive<A>(effect: Effect.Effect<A, never, QdrantClient | OllamaClient>): Promise<A> {
+  const qdrantLayer = makeQdrantClientLive({
+    qdrantUrl: QDRANT,
+    collectionName: COLLECTION,
+    embedDims: 768,
+  })
+  const ollamaLayer = makeOllamaClientLive({
+    ollamaUrl: OLLAMA,
+    llmModel: "qwen2.5:3b",
+    embedModel: "nomic-embed-text",
+    embedProvider: "ollama",
+    openaiBaseUrl: OPENAI_BASE,
+  })
+  return Effect.runPromise(Effect.provide(effect, Layer.merge(qdrantLayer, ollamaLayer)))
 }
 
 function makeReq(method: string, url: string, body?: unknown): Request {
@@ -476,5 +500,47 @@ describe("POST /add (identifier validation)", () => {
     expect(res.status).toBe(400)
     const data = await parseJson(res)
     expect(data.error).toContain("Validation failed")
+  })
+})
+
+describe("MSW integration", () => {
+  test("POST /add works with live layers and MSW handlers", async () => {
+    let upsertBody: unknown = null
+    mswServer.use(
+      http.post(`${OLLAMA}/api/generate`, () => HttpResponse.json({ response: '["User likes tests"]' })),
+      http.post(`${OLLAMA}/api/embeddings`, () => HttpResponse.json({ embedding: [0.1, 0.2, 0.3] })),
+      http.put(`${QDRANT}/collections/${COLLECTION}/points`, async ({ request }) => {
+        upsertBody = await request.json()
+        return HttpResponse.json({ result: { operation_id: 1, status: "completed" } })
+      })
+    )
+
+    const res = await runWithLive(
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "hello", user_id: "u1" }))
+    )
+    expect(res.status).toBe(200)
+    const data = await parseJson(res)
+    expect(data.results).toHaveLength(1)
+    expect(data.results[0].memory).toBe("User likes tests")
+    expect(upsertBody).not.toBeNull()
+  })
+
+  test("POST /search works with live layers and MSW handlers", async () => {
+    mswServer.use(
+      http.post(`${OLLAMA}/api/embeddings`, () => HttpResponse.json({ embedding: [0.1, 0.2, 0.3] })),
+      http.post(`${QDRANT}/collections/${COLLECTION}/points/search`, () =>
+        HttpResponse.json({
+          result: [{ id: "1", score: 0.91, payload: { memory: "User likes tests", user_id: "u1" } }],
+        })
+      )
+    )
+
+    const res = await runWithLive(
+      handleSearch(makeReq("POST", "http://localhost/search", { query: "tests", user_id: "u1" }))
+    )
+    expect(res.status).toBe(200)
+    const data = await parseJson(res)
+    expect(data.results).toHaveLength(1)
+    expect(data.results[0].memory).toBe("User likes tests")
   })
 })
