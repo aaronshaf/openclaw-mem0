@@ -3,7 +3,7 @@ Description=openclaw-mem0 memory server
 After=network.target
 
 [Service]
-ExecStart=/home/shaf/.bun/bin/bun run /home/shaf/github/openclaw-mem0/server/index.ts
+ExecStart=/home/shaf/.bun/bin/bun run /home/shaf/github/openclaw-mem0/server/infrastructure.ts
 WorkingDirectory=/home/shaf/github/openclaw-mem0/server
 Restart=always
 RestartSec=3
