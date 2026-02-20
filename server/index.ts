@@ -1,4 +1,5 @@
 import { Config, Context, Effect, Layer, Schema, pipe } from "effect"
+import { makeQdrantClientLive, makeOllamaClientLive } from "./infrastructure"
 import type {
   SearchResponse,
   AddResponse,
@@ -360,3 +361,129 @@ export {
 }
 export type { QdrantClientService, OllamaClientService }
 
+
+
+export let qdrantReady = false
+
+function startServer() {
+  const program = pipe(
+    AppConfig,
+    Effect.flatMap((cfg) => {
+      const qdrantLayer = makeQdrantClientLive({
+        qdrantUrl: cfg.qdrantUrl,
+        collectionName: cfg.collectionName,
+        embedDims: cfg.embedDims,
+      })
+      if (cfg.embedProvider === "openai" && cfg.openaiApiKey._tag === "None") {
+        console.warn("[config] EMBED_PROVIDER=openai but OPENAI_API_KEY is not set — requests will be unauthenticated")
+      }
+
+      const ollamaLayer = makeOllamaClientLive({
+        ollamaUrl: cfg.ollamaUrl,
+        llmModel: cfg.llmModel,
+        embedModel: cfg.embedModel,
+        embedProvider: cfg.embedProvider,
+        openaiApiKey: cfg.openaiApiKey._tag === "Some" ? cfg.openaiApiKey.value : undefined,
+        openaiBaseUrl: cfg.openaiBaseUrl,
+      })
+      const fullLayer = Layer.merge(qdrantLayer, ollamaLayer)
+
+      const apiKeyValue = cfg.apiKey._tag === "Some" ? cfg.apiKey.value : null
+
+      const ensureInit = pipe(
+        Effect.flatMap(QdrantClient, (qdrant) => qdrant.ensureCollection()),
+        Effect.map(() => {
+          qdrantReady = true
+        }),
+        Effect.catchAll((e) => {
+          console.error(`[init] Failed to ensure collection: ${e.message}`)
+          console.warn("[init] Server will start anyway — Qdrant may not be ready yet")
+          qdrantReady = false
+          return Effect.void
+        }),
+        Effect.provide(fullLayer)
+      )
+
+      return pipe(
+        ensureInit,
+        Effect.map(() => {
+          function checkAuth(req: Request): Response | null {
+            if (!apiKeyValue) return null
+            const auth = req.headers.get("authorization")
+            if (!auth || auth !== `Bearer ${apiKeyValue}`) {
+              return errorResponse("Unauthorized", 401)
+            }
+            return null
+          }
+
+          const server = Bun.serve({
+            port: cfg.port,
+            async fetch(req: Request) {
+              const url = new URL(req.url)
+              const method = req.method.toUpperCase()
+              const path = url.pathname
+
+              console.log(`[http] ${method} ${path}`)
+
+              // /health is exempt from auth
+              if (method === "GET" && path === "/health") {
+                if (!qdrantReady) {
+                  return json({ status: "degraded", reason: "qdrant unreachable" } satisfies HealthResponse, 503)
+                }
+                return json({ status: "ok" } satisfies HealthResponse)
+              }
+
+              // Auth check for all other routes
+              const authErr = checkAuth(req)
+              if (authErr) return authErr
+
+              if (method === "POST" && path === "/add") {
+                return Effect.runPromise(Effect.provide(handleAdd(req), fullLayer))
+              }
+
+              if (method === "POST" && path === "/search") {
+                return Effect.runPromise(Effect.provide(handleSearch(req), fullLayer))
+              }
+
+              if (method === "DELETE" && path.startsWith("/memories/")) {
+                const id = path.slice("/memories/".length)
+                if (!id) return errorResponse("Missing memory ID")
+                return Effect.runPromise(Effect.provide(handleDelete(id), fullLayer))
+              }
+
+              if (method === "GET" && path === "/memories/count") {
+                return Effect.runPromise(Effect.provide(handleCountMemories(req), fullLayer))
+              }
+
+              if (method === "GET" && path === "/memories") {
+                return Effect.runPromise(Effect.provide(handleListMemories(req), fullLayer))
+              }
+
+              return errorResponse("Not found", 404)
+            },
+            error(err: Error) {
+              console.error(`[server] Unhandled error: ${String(err)}`)
+              return new Response("Internal server error", { status: 500 })
+            },
+          })
+
+          console.log(`[server] openclaw-mem0-server listening on port ${cfg.port}`)
+          console.log(`[server] Qdrant: ${cfg.qdrantUrl}, collection: ${cfg.collectionName}`)
+          console.log(`[server] Ollama LLM: ${cfg.llmModel}, embed: ${cfg.embedModel}`)
+          if (apiKeyValue) console.log(`[server] API key auth enabled`)
+
+          return server
+        })
+      )
+    })
+  )
+
+  Effect.runPromise(program).catch((e) => {
+    console.error("[fatal] Failed to start server:", e)
+    process.exit(1)
+  })
+}
+
+if (import.meta.main) {
+  startServer()
+}
