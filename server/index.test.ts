@@ -360,3 +360,121 @@ describe("GET /memories/count", () => {
     expect(receivedRunId).toBe("sess-42")
   })
 })
+
+// --- Additional error path tests ---
+
+describe("POST /add (error paths)", () => {
+  test("invalid JSON body -> 400", async () => {
+    const req = new Request("http://localhost/add", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: "not valid json{{{",
+    })
+    const res = await runWithMocks(handleAdd(req))
+    expect(res.status).toBe(400)
+    const data = await parseJson(res)
+    expect(data.error).toContain("Invalid JSON")
+  })
+
+  test("extractFacts returns empty array -> returns empty results", async () => {
+    const res = await runWithMocks(
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "hello", user_id: "u1" })),
+      {},
+      { extractFacts: () => Effect.succeed([]) }
+    )
+    expect(res.status).toBe(200)
+    const data = await parseJson(res)
+    expect(data.results).toHaveLength(0)
+    expect(data.failed).toBe(0)
+  })
+
+  test("all facts fail to store -> returns 200 with empty results and failed count", async () => {
+    const res = await runWithMocks(
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "stuff", user_id: "u1" })),
+      {
+        upsertPoint: () => Effect.fail({ _tag: "QdrantError", message: "qdrant down" } as any),
+      },
+      { extractFacts: () => Effect.succeed(["fact1", "fact2"]) }
+    )
+    expect(res.status).toBe(200)
+    const data = await parseJson(res)
+    expect(data.results).toHaveLength(0)
+    expect(data.failed).toBe(2)
+  })
+})
+
+describe("POST /search (error paths)", () => {
+  test("embed fails -> 500", async () => {
+    const { OllamaError } = await import("./index")
+    const res = await runWithMocks(
+      handleSearch(makeReq("POST", "http://localhost/search", { query: "typescript", user_id: "u1" })),
+      {},
+      { embed: () => Effect.fail(new OllamaError({ message: "ollama down" })) }
+    )
+    expect(res.status).toBe(500)
+    const data = await parseJson(res)
+    expect(data.error).toContain("Search failed")
+  })
+
+  test("searchPoints fails -> 500", async () => {
+    const { QdrantError } = await import("./index")
+    const res = await runWithMocks(
+      handleSearch(makeReq("POST", "http://localhost/search", { query: "typescript", user_id: "u1" })),
+      { searchPoints: () => Effect.fail(new QdrantError({ message: "qdrant down" })) }
+    )
+    expect(res.status).toBe(500)
+    const data = await parseJson(res)
+    expect(data.error).toContain("Search failed")
+  })
+})
+
+describe("DELETE /memories/:id (error paths)", () => {
+  test("deletePoint fails -> 500", async () => {
+    const { QdrantError } = await import("./index")
+    const id = "550e8400-e29b-41d4-a716-446655440000"
+    const res = await runWithQdrant(
+      handleDelete(id),
+      { deletePoint: () => Effect.fail(new QdrantError({ message: "qdrant down" })) }
+    )
+    expect(res.status).toBe(500)
+    const data = await parseJson(res)
+    expect(data.error).toContain("Delete failed")
+  })
+})
+
+describe("GET /memories (error paths)", () => {
+  test("scrollPoints fails -> 500", async () => {
+    const { QdrantError } = await import("./index")
+    const res = await runWithQdrant(
+      handleListMemories(makeReq("GET", "http://localhost/memories?user_id=foo")),
+      { scrollPoints: () => Effect.fail(new QdrantError({ message: "qdrant down" })) }
+    )
+    expect(res.status).toBe(500)
+    const data = await parseJson(res)
+    expect(data.error).toContain("Failed to list memories")
+  })
+})
+
+describe("GET /memories/count (error paths)", () => {
+  test("countPoints fails -> 500", async () => {
+    const { QdrantError } = await import("./index")
+    const res = await runWithQdrant(
+      handleCountMemories(makeReq("GET", "http://localhost/memories/count?user_id=foo")),
+      { countPoints: () => Effect.fail(new QdrantError({ message: "qdrant down" })) }
+    )
+    expect(res.status).toBe(500)
+    const data = await parseJson(res)
+    expect(data.error).toContain("Failed to count memories")
+  })
+})
+
+describe("POST /add (identifier validation)", () => {
+  test("empty string user_id -> 400 validation error", async () => {
+    const res = await runWithMocks(
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "hello", user_id: "" }))
+    )
+    expect(res.status).toBe(400)
+    const data = await parseJson(res)
+    expect(data.error).toContain("Validation failed")
+  })
+})

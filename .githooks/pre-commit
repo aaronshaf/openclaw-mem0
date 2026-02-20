@@ -1,7 +1,28 @@
 #!/bin/sh
 set -e
-echo "Running tests..."
+echo "Running tests with coverage..."
 cd "$(git rev-parse --show-toplevel)"
 export PATH=$HOME/.bun/bin:$PATH
-cd server && bun test
+RESULT=$(cd server && bun test --coverage 2>&1)
+echo "$RESULT"
+
+# Coverage table columns (pipe-separated, awk fields):
+#  $1=file  $2=|  $3=%Funcs  $4=|  $5=%Lines  ...
+check_coverage() {
+  local label="$1" pattern="$2" func_min="$3" line_min="$4"
+  local func_cov line_cov
+  func_cov=$(echo "$RESULT" | grep "$pattern" | awk '{print $3}')
+  line_cov=$(echo "$RESULT" | grep "$pattern" | awk '{print $5}')
+  if [ -z "$func_cov" ] || [ -z "$line_cov" ]; then
+    echo "Could not parse coverage for $label"
+    exit 1
+  fi
+  awk "BEGIN { if ($func_cov < $func_min) { print \"FAIL [$label]: funcs ${func_cov}% < ${func_min}%\"; exit 1 } }"
+  awk "BEGIN { if ($line_cov < $line_min) { print \"FAIL [$label]: lines ${line_cov}% < ${line_min}%\"; exit 1 } }"
+  echo "OK [$label]: funcs=${func_cov}% lines=${line_cov}%"
+}
+
+check_coverage "index.ts"          " index.ts "          95 95
+check_coverage "infrastructure.ts" " infrastructure.ts "  85 65
+
 echo "All tests passed."
