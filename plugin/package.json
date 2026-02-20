@@ -4,15 +4,14 @@
   "description": "openclaw memory plugin — calls mem0 REST API. Simple, no native deps.",
   "main": "index.ts",
   "scripts": {
-    "test": "vitest run"
+    "test": "bun test"
   },
   "dependencies": {
     "effect": "3.19.18"
   },
   "devDependencies": {
     "typescript": "^5.0.0",
-    "@types/node": "^20.0.0",
-    "vitest": "^3.0.0"
+    "@types/node": "^20.0.0"
   },
   "openclaw": {
     "extensions": [
