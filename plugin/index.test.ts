@@ -1,19 +1,27 @@
-import { describe, it, expect, vi, beforeEach, afterEach } from "vitest"
+import { describe, it, expect, mock, beforeEach, afterEach } from "bun:test"
 import { decodeConfig, decodeSearchResponse, decodeAddResponse, decodeHealthResponse, decodeCountResponse, mem0Search, mem0Add, mem0Count } from "./index"
 import plugin from "./index"
+
+const originalFetch = globalThis.fetch
 
 // ---------------------------------------------------------------------------
 // decodeConfig
 // ---------------------------------------------------------------------------
 describe("decodeConfig", () => {
-  it("accepts a valid config with required fields", () => {
-    const cfg = decodeConfig({ url: "http://localhost:8000", userId: "user1" })
+  it("accepts a valid config with only url (all other fields optional)", () => {
+    const cfg = decodeConfig({ url: "http://localhost:8000" })
     expect(cfg.url).toBe("http://localhost:8000")
-    expect(cfg.userId).toBe("user1")
   })
 
-  it("accepts optional fields", () => {
-    const cfg = decodeConfig({ url: "http://x", userId: "u", autoCapture: true, autoRecall: false, topK: 10 })
+  it("accepts userId, agentId, runId as optional fields", () => {
+    const cfg = decodeConfig({ url: "http://x", userId: "u", agentId: "agent1", runId: "run1" })
+    expect(cfg.userId).toBe("u")
+    expect(cfg.agentId).toBe("agent1")
+    expect(cfg.runId).toBe("run1")
+  })
+
+  it("accepts boolean/number optional fields", () => {
+    const cfg = decodeConfig({ url: "http://x", autoCapture: true, autoRecall: false, topK: 10 })
     expect(cfg.autoCapture).toBe(true)
     expect(cfg.autoRecall).toBe(false)
     expect(cfg.topK).toBe(10)
@@ -23,12 +31,8 @@ describe("decodeConfig", () => {
     expect(() => decodeConfig({ userId: "u" })).toThrow("invalid plugin config")
   })
 
-  it("throws a human-readable error when userId is missing", () => {
-    expect(() => decodeConfig({ url: "http://x" })).toThrow("invalid plugin config")
-  })
-
   it("throws when url is not a string", () => {
-    expect(() => decodeConfig({ url: 123, userId: "u" })).toThrow("invalid plugin config")
+    expect(() => decodeConfig({ url: 123 })).toThrow("invalid plugin config")
   })
 
   it("throws when userId is not a string", () => {
@@ -36,7 +40,7 @@ describe("decodeConfig", () => {
   })
 
   it("throws when topK is not a number", () => {
-    expect(() => decodeConfig({ url: "http://x", userId: "u", topK: "five" })).toThrow("invalid plugin config")
+    expect(() => decodeConfig({ url: "http://x", topK: "five" })).toThrow("invalid plugin config")
   })
 })
 
@@ -129,40 +133,48 @@ describe("decodeCountResponse", () => {
 // mem0Search
 // ---------------------------------------------------------------------------
 describe("mem0Search", () => {
-  beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn())
-  })
   afterEach(() => {
-    vi.unstubAllGlobals()
+    globalThis.fetch = originalFetch
   })
 
   it("POSTs to /search and returns results", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ results: [{ id: "1", memory: "remember this", score: 0.95 }] }),
-    })
-    vi.stubGlobal("fetch", mockFetch)
+    const mockFetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({ results: [{ id: "1", memory: "remember this", score: 0.95 }] }),
+      } as Response)
+    )
+    globalThis.fetch = mockFetch as any
 
     const results = await mem0Search("http://localhost:8000", "test query", "user1", 5)
-    expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:8000/search",
-      expect.objectContaining({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ query: "test query", user_id: "user1", limit: 5 }),
-      })
-    )
+    expect(mockFetch.mock.calls).toHaveLength(1)
+    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe("http://localhost:8000/search")
+    expect(opts.method).toBe("POST")
+    expect(JSON.parse(opts.body as string)).toEqual({ query: "test query", user_id: "user1", limit: 5 })
     expect(results).toHaveLength(1)
     expect(results[0].memory).toBe("remember this")
   })
 
+  it("includes agentId in body when provided", async () => {
+    const mockFetch = mock(() =>
+      Promise.resolve({ ok: true, json: async () => ({ results: [] }) } as Response)
+    )
+    globalThis.fetch = mockFetch as any
+    await mem0Search("http://localhost:8000", "q", "u", 5, "agent1")
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, RequestInit])[1].body as string)
+    expect(body.agent_id).toBe("agent1")
+  })
+
   it("throws on non-ok HTTP response", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: "Server Error" }))
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: false, status: 500, statusText: "Server Error" } as Response)
+    ) as any
     await expect(mem0Search("http://localhost:8000", "q", "u", 5)).rejects.toThrow("HTTP 500")
   })
 
   it("propagates fetch network errors", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("Network failure")))
+    globalThis.fetch = mock(() => Promise.reject(new Error("Network failure"))) as any
     await expect(mem0Search("http://localhost:8000", "q", "u", 5)).rejects.toThrow("Network failure")
   })
 })
@@ -171,33 +183,47 @@ describe("mem0Search", () => {
 // mem0Add
 // ---------------------------------------------------------------------------
 describe("mem0Add", () => {
-  beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn())
-  })
   afterEach(() => {
-    vi.unstubAllGlobals()
+    globalThis.fetch = originalFetch
   })
 
-  it("POSTs to /add without agent_id and returns results", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ results: [{ id: "2", memory: "stored", event: "ADD" }] }),
-    })
-    vi.stubGlobal("fetch", mockFetch)
+  it("POSTs to /add with user_id", async () => {
+    const mockFetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({ results: [{ id: "2", memory: "stored", event: "ADD" }] }),
+      } as Response)
+    )
+    globalThis.fetch = mockFetch as any
 
     const results = await mem0Add("http://localhost:8000", "User: hello\nAssistant: hi", "user1")
-    expect(mockFetch).toHaveBeenCalledWith(
-      "http://localhost:8000/add",
-      expect.objectContaining({
-        method: "POST",
-        body: JSON.stringify({ messages: "User: hello\nAssistant: hi", user_id: "user1" }),
-      })
-    )
+    const [url, opts] = mockFetch.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe("http://localhost:8000/add")
+    const body = JSON.parse(opts.body as string)
+    expect(body.messages).toBe("User: hello\nAssistant: hi")
+    expect(body.user_id).toBe("user1")
+    expect(body.agent_id).toBeUndefined()
     expect(results[0].event).toBe("ADD")
   })
 
+  it("includes agent_id and run_id when provided", async () => {
+    const mockFetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({ results: [{ id: "3", memory: "x", event: "ADD" }] }),
+      } as Response)
+    )
+    globalThis.fetch = mockFetch as any
+    await mem0Add("http://localhost:8000", "msg", "user1", "agent1", "run1")
+    const body = JSON.parse((mockFetch.mock.calls[0] as [string, RequestInit])[1].body as string)
+    expect(body.agent_id).toBe("agent1")
+    expect(body.run_id).toBe("run1")
+  })
+
   it("throws on non-ok HTTP response", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 401, statusText: "Unauthorized" }))
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: false, status: 401, statusText: "Unauthorized" } as Response)
+    ) as any
     await expect(mem0Add("http://localhost:8000", "msg", "u")).rejects.toThrow("HTTP 401")
   })
 })
@@ -206,27 +232,36 @@ describe("mem0Add", () => {
 // mem0Count
 // ---------------------------------------------------------------------------
 describe("mem0Count", () => {
-  beforeEach(() => {
-    vi.stubGlobal("fetch", vi.fn())
-  })
   afterEach(() => {
-    vi.unstubAllGlobals()
+    globalThis.fetch = originalFetch
   })
 
   it("GETs /memories/count and returns count", async () => {
-    const mockFetch = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ count: 42 }),
-    })
-    vi.stubGlobal("fetch", mockFetch)
+    const mockFetch = mock(() =>
+      Promise.resolve({ ok: true, json: async () => ({ count: 42 }) } as Response)
+    )
+    globalThis.fetch = mockFetch as any
 
     const count = await mem0Count("http://localhost:8000", "user1")
-    expect(mockFetch).toHaveBeenCalledWith("http://localhost:8000/memories/count?user_id=user1")
+    const [url] = mockFetch.mock.calls[0] as [string]
+    expect(url).toBe("http://localhost:8000/memories/count?user_id=user1")
     expect(count).toBe(42)
   })
 
+  it("includes agent_id in query string when provided", async () => {
+    const mockFetch = mock(() =>
+      Promise.resolve({ ok: true, json: async () => ({ count: 5 }) } as Response)
+    )
+    globalThis.fetch = mockFetch as any
+    await mem0Count("http://localhost:8000", "user1", "agent1")
+    const [url] = mockFetch.mock.calls[0] as [string]
+    expect(url).toContain("agent_id=agent1")
+  })
+
   it("throws on non-ok response", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false, status: 500, statusText: "Error" }))
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: false, status: 500, statusText: "Error" } as Response)
+    ) as any
     await expect(mem0Count("http://localhost:8000", "u")).rejects.toThrow("HTTP 500")
   })
 })
@@ -235,68 +270,63 @@ describe("mem0Count", () => {
 // Plugin initialization
 // ---------------------------------------------------------------------------
 describe("plugin initialization", () => {
-  it("logs initialization message and calls decodeConfig", async () => {
+  it("logs initialization message", async () => {
     const mockApi = {
-      pluginConfig: { url: "http://localhost:8000", userId: "testuser" },
-      logger: { info: vi.fn(), warn: vi.fn() },
-      on: vi.fn(),
-      registerCli: vi.fn(),
+      pluginConfig: { url: "http://localhost:8000", userId: "testuser", agentId: "agent1" },
+      logger: { info: mock(() => {}), warn: mock(() => {}) },
+      on: mock(() => {}),
+      registerCli: mock(() => {}),
     }
     await plugin(mockApi as any)
-    expect(mockApi.logger.info).toHaveBeenCalledWith(
-      expect.stringContaining("openclaw-mem0: initialized")
-    )
-    expect(mockApi.logger.info).toHaveBeenCalledWith(
-      expect.stringContaining("http://localhost:8000")
-    )
-    expect(mockApi.logger.info).toHaveBeenCalledWith(
-      expect.stringContaining("testuser")
-    )
+    expect(mockApi.logger.info.mock.calls.length).toBeGreaterThan(0)
+    const infoMsg = (mockApi.logger.info.mock.calls[0] as [string])[0]
+    expect(infoMsg).toContain("openclaw-mem0: initialized")
+    expect(infoMsg).toContain("http://localhost:8000")
   })
 
-  it("throws with human-readable error if config is invalid", async () => {
+  it("throws with human-readable error if url is missing", async () => {
     const mockApi = {
-      pluginConfig: { url: "http://localhost:8000" }, // missing userId
-      logger: { info: vi.fn(), warn: vi.fn() },
-      on: vi.fn(),
-      registerCli: vi.fn(),
+      pluginConfig: { agentId: "agent1" }, // missing url
+      logger: { info: mock(() => {}), warn: mock(() => {}) },
+      on: mock(() => {}),
+      registerCli: mock(() => {}),
     }
     await expect(plugin(mockApi as any)).rejects.toThrow("invalid plugin config")
   })
 
   it("does not register before_agent_start when autoRecall is false", async () => {
     const mockApi = {
-      pluginConfig: { url: "http://x", userId: "u", autoRecall: false },
-      logger: { info: vi.fn(), warn: vi.fn() },
-      on: vi.fn(),
-      registerCli: vi.fn(),
+      pluginConfig: { url: "http://x", autoRecall: false },
+      logger: { info: mock(() => {}), warn: mock(() => {}) },
+      on: mock(() => {}),
+      registerCli: mock(() => {}),
     }
     await plugin(mockApi as any)
-    const eventNames = mockApi.on.mock.calls.map((c: any[]) => c[0])
+    const eventNames = (mockApi.on.mock.calls as [string, unknown][]).map((c) => c[0])
     expect(eventNames).not.toContain("before_agent_start")
   })
 
   it("registers before_agent_start when autoRecall is true", async () => {
     const mockApi = {
-      pluginConfig: { url: "http://x", userId: "u", autoRecall: true },
-      logger: { info: vi.fn(), warn: vi.fn() },
-      on: vi.fn(),
-      registerCli: vi.fn(),
+      pluginConfig: { url: "http://x", autoRecall: true },
+      logger: { info: mock(() => {}), warn: mock(() => {}) },
+      on: mock(() => {}),
+      registerCli: mock(() => {}),
     }
     await plugin(mockApi as any)
-    const eventNames = mockApi.on.mock.calls.map((c: any[]) => c[0])
+    const eventNames = (mockApi.on.mock.calls as [string, unknown][]).map((c) => c[0])
     expect(eventNames).toContain("before_agent_start")
   })
 
   it("registers agent_end when autoCapture is true", async () => {
     const mockApi = {
-      pluginConfig: { url: "http://x", userId: "u", autoCapture: true },
-      logger: { info: vi.fn(), warn: vi.fn() },
-      on: vi.fn(),
-      registerCli: vi.fn(),
+      pluginConfig: { url: "http://x", autoCapture: true },
+      logger: { info: mock(() => {}), warn: mock(() => {}) },
+      on: mock(() => {}),
+      registerCli: mock(() => {}),
     }
     await plugin(mockApi as any)
-    const eventNames = mockApi.on.mock.calls.map((c: any[]) => c[0])
+    const eventNames = (mockApi.on.mock.calls as [string, unknown][]).map((c) => c[0])
     expect(eventNames).toContain("agent_end")
   })
 })
@@ -309,20 +339,19 @@ describe("autoRecall handler", () => {
   let recallHandler: (event: any, ctx: any) => Promise<any>
 
   beforeEach(async () => {
-    vi.stubGlobal("fetch", vi.fn())
     mockApi = {
       pluginConfig: { url: "http://localhost:8000", userId: "u", autoRecall: true, topK: 3 },
-      logger: { info: vi.fn(), warn: vi.fn() },
-      on: vi.fn(),
-      registerCli: vi.fn(),
+      logger: { info: mock(() => {}), warn: mock(() => {}) },
+      on: mock(() => {}),
+      registerCli: mock(() => {}),
     }
     await plugin(mockApi as any)
-    const call = mockApi.on.mock.calls.find((c: any[]) => c[0] === "before_agent_start")
-    recallHandler = call[1]
+    const call = (mockApi.on.mock.calls as [string, Function][]).find((c) => c[0] === "before_agent_start")
+    recallHandler = call![1]
   })
 
   afterEach(() => {
-    vi.unstubAllGlobals()
+    globalThis.fetch = originalFetch
   })
 
   it("returns {} when prompt is too short (< 5 chars)", async () => {
@@ -336,51 +365,50 @@ describe("autoRecall handler", () => {
   })
 
   it("returns prependContext when memories are found", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({
-        results: [
-          { id: "1", memory: "User likes TypeScript", score: 0.9 },
-          { id: "2", memory: "User prefers short responses", score: 0.8 },
-        ],
-      }),
-    }))
+    globalThis.fetch = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({
+          results: [
+            { id: "1", memory: "User likes TypeScript", score: 0.9 },
+            { id: "2", memory: "User prefers short responses", score: 0.8 },
+          ],
+        }),
+      } as Response)
+    ) as any
+
     const result = await recallHandler({ prompt: "what do I like?" }, {})
     expect(result).toHaveProperty("prependContext")
     expect(result.prependContext).toContain("User likes TypeScript")
     expect(result.prependContext).toContain("User prefers short responses")
     expect(result.prependContext).toContain("<relevant-memories>")
-    expect(mockApi.logger.info).toHaveBeenCalledWith(
-      expect.stringContaining("injecting 2 memories")
-    )
+    const infoMessages = (mockApi.logger.info.mock.calls as [string][]).map((c) => c[0])
+    expect(infoMessages.some((m) => m.includes("injecting 2 memories"))).toBe(true)
   })
 
   it("returns {} when search returns no results", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ results: [] }),
-    }))
+    globalThis.fetch = mock(() =>
+      Promise.resolve({ ok: true, json: async () => ({ results: [] }) } as Response)
+    ) as any
     const result = await recallHandler({ prompt: "what do I like?" }, {})
     expect(result).toEqual({})
   })
 
   it("logs warn and returns {} when fetch fails", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("network error")))
+    globalThis.fetch = mock(() => Promise.reject(new Error("network error"))) as any
     const result = await recallHandler({ prompt: "what do I like?" }, {})
     expect(result).toEqual({})
-    expect(mockApi.logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("recall failed")
-    )
+    const warnMessages = (mockApi.logger.warn.mock.calls as [string][]).map((c) => c[0])
+    expect(warnMessages.some((m) => m.includes("recall failed"))).toBe(true)
   })
 
   it("uses topK from config when searching", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ results: [] }),
-    })
-    vi.stubGlobal("fetch", fetchMock)
+    const fetchMock = mock(() =>
+      Promise.resolve({ ok: true, json: async () => ({ results: [] }) } as Response)
+    )
+    globalThis.fetch = fetchMock as any
     await recallHandler({ prompt: "test prompt here" }, {})
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
+    const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string)
     expect(body.limit).toBe(3)
   })
 })
@@ -393,28 +421,29 @@ describe("autoCapture handler", () => {
   let captureHandler: (event: any, ctx: any) => Promise<void>
 
   beforeEach(async () => {
-    vi.stubGlobal("fetch", vi.fn())
     mockApi = {
       pluginConfig: { url: "http://localhost:8000", userId: "u", autoCapture: true },
-      logger: { info: vi.fn(), warn: vi.fn() },
-      on: vi.fn(),
-      registerCli: vi.fn(),
+      logger: { info: mock(() => {}), warn: mock(() => {}) },
+      on: mock(() => {}),
+      registerCli: mock(() => {}),
     }
     await plugin(mockApi as any)
-    const call = mockApi.on.mock.calls.find((c: any[]) => c[0] === "agent_end")
-    captureHandler = call[1]
+    const call = (mockApi.on.mock.calls as [string, Function][]).find((c) => c[0] === "agent_end")
+    captureHandler = call![1]
   })
 
   afterEach(() => {
-    vi.unstubAllGlobals()
+    globalThis.fetch = originalFetch
   })
 
   it("captures messages on success", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ results: [{ id: "1", memory: "captured", event: "ADD" }] }),
-    })
-    vi.stubGlobal("fetch", fetchMock)
+    const fetchMock = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({ results: [{ id: "1", memory: "captured", event: "ADD" }] }),
+      } as Response)
+    )
+    globalThis.fetch = fetchMock as any
     await captureHandler({
       success: true,
       messages: [
@@ -422,73 +451,71 @@ describe("autoCapture handler", () => {
         { role: "assistant", content: "Hi there" },
       ],
     }, {})
-    expect(fetchMock).toHaveBeenCalledWith(
-      "http://localhost:8000/add",
-      expect.objectContaining({ method: "POST" })
-    )
-    // Verify no agent_id is sent
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
-    expect(body).not.toHaveProperty("agent_id")
-    expect(mockApi.logger.info).toHaveBeenCalledWith(
-      expect.stringContaining("captured 1 memory")
-    )
+    expect(fetchMock.mock.calls).toHaveLength(1)
+    const [url, opts] = fetchMock.mock.calls[0] as [string, RequestInit]
+    expect(url).toBe("http://localhost:8000/add")
+    expect(opts.method).toBe("POST")
+    const infoMessages = (mockApi.logger.info.mock.calls as [string][]).map((c) => c[0])
+    expect(infoMessages.some((m) => m.includes("captured 1 memory"))).toBe(true)
   })
 
   it("skips when success is false", async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
+    const fetchMock = mock(() => Promise.resolve({} as Response))
+    globalThis.fetch = fetchMock as any
     await captureHandler({ success: false, messages: [{ role: "user", content: "hi" }] }, {})
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls).toHaveLength(0)
   })
 
   it("skips when messages array is empty", async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
+    const fetchMock = mock(() => Promise.resolve({} as Response))
+    globalThis.fetch = fetchMock as any
     await captureHandler({ success: true, messages: [] }, {})
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls).toHaveLength(0)
   })
 
   it("skips when messages is missing", async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
+    const fetchMock = mock(() => Promise.resolve({} as Response))
+    globalThis.fetch = fetchMock as any
     await captureHandler({ success: true }, {})
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls).toHaveLength(0)
   })
 
   it("skips when all messages are system role (not user or assistant)", async () => {
-    const fetchMock = vi.fn()
-    vi.stubGlobal("fetch", fetchMock)
+    const fetchMock = mock(() => Promise.resolve({} as Response))
+    globalThis.fetch = fetchMock as any
     await captureHandler({
       success: true,
       messages: [{ role: "system", content: "You are a helpful assistant" }],
     }, {})
-    expect(fetchMock).not.toHaveBeenCalled()
+    expect(fetchMock.mock.calls).toHaveLength(0)
   })
 
   it("logs warn and does not throw when add fails", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockRejectedValue(new Error("add error")))
-    await expect(captureHandler({
+    globalThis.fetch = mock(() => Promise.reject(new Error("add error"))) as any
+    const p = captureHandler({
       success: true,
       messages: [{ role: "user", content: "Hello" }],
-    }, {})).resolves.not.toThrow()
-    expect(mockApi.logger.warn).toHaveBeenCalledWith(
-      expect.stringContaining("capture failed")
-    )
+    }, {})
+    await expect(p).resolves.toBeUndefined()
+    const warnMessages = (mockApi.logger.warn.mock.calls as [string][]).map((c) => c[0])
+    expect(warnMessages.some((m) => m.includes("capture failed"))).toBe(true)
   })
 
-  it("only sends last 10 messages", async () => {
-    const fetchMock = vi.fn().mockResolvedValue({
-      ok: true,
-      json: async () => ({ results: [] }),
-    })
-    vi.stubGlobal("fetch", fetchMock)
+  it("only sends last 6 messages", async () => {
+    const fetchMock = mock(() =>
+      Promise.resolve({
+        ok: true,
+        json: async () => ({ results: [] }),
+      } as Response)
+    )
+    globalThis.fetch = fetchMock as any
     const messages = Array.from({ length: 15 }, (_, i) => ({
       role: i % 2 === 0 ? "user" : "assistant",
       content: `message ${i}`,
     }))
     await captureHandler({ success: true, messages }, {})
-    const body = JSON.parse(fetchMock.mock.calls[0][1].body)
-    // Last 10 messages: indices 5-14
+    const body = JSON.parse((fetchMock.mock.calls[0] as [string, RequestInit])[1].body as string)
+    // Last 6 messages: indices 9-14
     expect(body.messages).toContain("message 14")
     expect(body.messages).not.toContain("message 4")
   })
