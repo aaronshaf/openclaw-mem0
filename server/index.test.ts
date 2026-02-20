@@ -20,10 +20,10 @@ function makeMockQdrant(overrides: Partial<QdrantClientService> = {}): Layer.Lay
   const defaults: QdrantClientService = {
     ensureCollection: () => Effect.void,
     upsertPoint: () => Effect.void,
-    searchPoints: (_vec, _uid, _lim, _aid?) => Effect.succeed([]),
+    searchPoints: (_vec, _uid, _lim, _aid?, _rid?) => Effect.succeed([]),
     deletePoint: () => Effect.void,
-    scrollPoints: (_uid?, _aid?) => Effect.succeed([]),
-    countPoints: (_uid?, _aid?) => Effect.succeed(0),
+    scrollPoints: (_uid?, _aid?, _rid?) => Effect.succeed([]),
+    countPoints: (_uid?, _aid?, _rid?) => Effect.succeed(0),
   }
   return Layer.succeed(QdrantClient, { ...defaults, ...overrides })
 }
@@ -107,9 +107,9 @@ describe("POST /add", () => {
     expect(res.status).toBe(400)
   })
 
-  test("missing agent_id -> 400", async () => {
+  test("missing all identifiers -> 400", async () => {
     const res = await runWithMocks(
-      handleAdd(makeReq("POST", "http://localhost/add", { messages: "hello", user_id: "u1" }))
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "hello" }))
     )
     expect(res.status).toBe(400)
   })
@@ -149,6 +149,32 @@ describe("POST /add", () => {
     expect(res.status).toBe(200)
     const data = await parseJson(res)
     expect(data.results.length + (data.failed ?? 0)).toBe(2)
+  })
+
+  test("add with run_id -> stores in payload", async () => {
+    let capturedPayload: Record<string, unknown> | null = null
+    const res = await runWithMocks(
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "session info", user_id: "u1", run_id: "session-123" })),
+      {
+        upsertPoint: (_id, _vec, payload) => {
+          capturedPayload = payload
+          return Effect.void
+        },
+      },
+      { extractFacts: () => Effect.succeed(["session info"]) }
+    )
+    expect(res.status).toBe(200)
+    expect(capturedPayload).not.toBeNull()
+    expect(capturedPayload!["run_id"]).toBe("session-123")
+  })
+
+  test("add with only run_id (no agent_id) -> succeeds", async () => {
+    const res = await runWithMocks(
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "hello", user_id: "u1", run_id: "sess-1" })),
+      {},
+      { extractFacts: () => Effect.succeed(["hello"]) }
+    )
+    expect(res.status).toBe(200)
   })
 })
 
@@ -202,6 +228,21 @@ describe("POST /search", () => {
     )
     expect(res.status).toBe(200)
     expect(receivedAgentId).toBeUndefined()
+  })
+
+  test("with run_id -> passes to searchPoints", async () => {
+    let receivedRunId: string | undefined
+    const res = await runWithMocks(
+      handleSearch(makeReq("POST", "http://localhost/search", { query: "ts", user_id: "u1", run_id: "session-abc" })),
+      {
+        searchPoints: (_vec, _uid, _lim, _aid, rid) => {
+          receivedRunId = rid
+          return Effect.succeed([])
+        },
+      }
+    )
+    expect(res.status).toBe(200)
+    expect(receivedRunId).toBe("session-abc")
   })
 
   test("query too long -> 400", async () => {
@@ -269,6 +310,21 @@ describe("GET /memories", () => {
     expect(res.status).toBe(200)
     expect(receivedAgentId).toBe("panda")
   })
+
+  test("with run_id -> passes to scrollPoints", async () => {
+    let receivedRunId: string | undefined
+    const res = await runWithQdrant(
+      handleListMemories(makeReq("GET", "http://localhost/memories?user_id=foo&run_id=sess-99")),
+      {
+        scrollPoints: (_uid, _aid, rid) => {
+          receivedRunId = rid
+          return Effect.succeed([])
+        },
+      }
+    )
+    expect(res.status).toBe(200)
+    expect(receivedRunId).toBe("sess-99")
+  })
 })
 
 describe("GET /memories/count", () => {
@@ -287,5 +343,20 @@ describe("GET /memories/count", () => {
       handleCountMemories(makeReq("GET", "http://localhost/memories/count"))
     )
     expect(res.status).toBe(400)
+  })
+
+  test("with run_id -> passes to countPoints", async () => {
+    let receivedRunId: string | undefined
+    const res = await runWithQdrant(
+      handleCountMemories(makeReq("GET", "http://localhost/memories/count?user_id=foo&run_id=sess-42")),
+      {
+        countPoints: (_uid, _aid, rid) => {
+          receivedRunId = rid
+          return Effect.succeed(7)
+        },
+      }
+    )
+    expect(res.status).toBe(200)
+    expect(receivedRunId).toBe("sess-42")
   })
 })

@@ -44,13 +44,15 @@ class ValidationError extends Schema.TaggedError<ValidationError>()("ValidationE
 const AddRequestSchema = Schema.Struct({
   messages: Schema.String.pipe(Schema.maxLength(50_000)),
   user_id: Schema.String,
-  agent_id: Schema.String,
+  agent_id: Schema.optional(Schema.String),
+  run_id: Schema.optional(Schema.String),
 })
 
 const SearchRequestSchema = Schema.Struct({
   query: Schema.String.pipe(Schema.maxLength(1000)),
   user_id: Schema.String,
   agent_id: Schema.optional(Schema.String),
+  run_id: Schema.optional(Schema.String),
   limit: Schema.optional(Schema.Number.pipe(Schema.between(1, 100))),
 })
 
@@ -138,10 +140,10 @@ function fetchJsonAs<E>(
 interface QdrantClientService {
   ensureCollection: () => Effect.Effect<void, QdrantError, never>
   upsertPoint: (id: string, vector: number[], payload: Record<string, unknown>) => Effect.Effect<void, QdrantError, never>
-  searchPoints: (vector: number[], userId: string, limit: number, agentId?: string) => Effect.Effect<SearchResult[], QdrantError, never>
+  searchPoints: (vector: number[], userId: string, limit: number, agentId?: string, runId?: string) => Effect.Effect<SearchResult[], QdrantError, never>
   deletePoint: (id: string) => Effect.Effect<void, QdrantError, never>
-  scrollPoints: (userId: string, agentId?: string) => Effect.Effect<Memory[], QdrantError, never>
-  countPoints: (userId: string, agentId?: string) => Effect.Effect<number, QdrantError, never>
+  scrollPoints: (userId: string, agentId?: string, runId?: string) => Effect.Effect<Memory[], QdrantError, never>
+  countPoints: (userId: string, agentId?: string, runId?: string) => Effect.Effect<number, QdrantError, never>
 }
 
 interface OllamaClientService {
@@ -197,9 +199,10 @@ function makeQdrantClientLive(cfg: {
         Effect.map(() => undefined)
       ),
 
-    searchPoints: (vector, userId, limit, agentId) => {
+    searchPoints: (vector, userId, limit, agentId, runId) => {
       const must: Array<Record<string, unknown>> = [{ key: "user_id", match: { value: userId } }]
       if (agentId) must.push({ key: "agent_id", match: { value: agentId } })
+      if (runId) must.push({ key: "run_id", match: { value: runId } })
       return pipe(
         fetchJsonAs(`${qdrantUrl}/collections/${collectionName}/points/search`, {
           method: "POST",
@@ -224,6 +227,7 @@ function makeQdrantClientLive(cfg: {
             score: r.score,
             user_id: r.payload["user_id"] ? String(r.payload["user_id"]) : undefined,
             agent_id: r.payload["agent_id"] ? String(r.payload["agent_id"]) : undefined,
+            run_id: r.payload["run_id"] ? String(r.payload["run_id"]) : undefined,
           }))
         )
       )
@@ -239,9 +243,10 @@ function makeQdrantClientLive(cfg: {
         Effect.map(() => undefined)
       ),
 
-    scrollPoints: (userId, agentId) => {
+    scrollPoints: (userId, agentId, runId) => {
       const must: Array<Record<string, unknown>> = [{ key: "user_id", match: { value: userId } }]
       if (agentId) must.push({ key: "agent_id", match: { value: agentId } })
+      if (runId) must.push({ key: "run_id", match: { value: runId } })
       const loop = (
         offset: string | number | null,
         acc: Memory[]
@@ -270,6 +275,7 @@ function makeQdrantClientLive(cfg: {
               memory: String(p.payload["memory"] ?? ""),
               user_id: p.payload["user_id"] ? String(p.payload["user_id"]) : undefined,
               agent_id: p.payload["agent_id"] ? String(p.payload["agent_id"]) : undefined,
+              run_id: p.payload["run_id"] ? String(p.payload["run_id"]) : undefined,
               created_at: p.payload["created_at"] ? String(p.payload["created_at"]) : undefined,
             }))
             const all = [...acc, ...newPoints]
@@ -281,9 +287,10 @@ function makeQdrantClientLive(cfg: {
       return loop(null, [])
     },
 
-    countPoints: (userId, agentId) => {
+    countPoints: (userId, agentId, runId) => {
       const must: Array<Record<string, unknown>> = [{ key: "user_id", match: { value: userId } }]
       if (agentId) must.push({ key: "agent_id", match: { value: agentId } })
+      if (runId) must.push({ key: "run_id", match: { value: runId } })
       return pipe(
         fetchJsonAs(`${qdrantUrl}/collections/${collectionName}/points/count`, {
           method: "POST",
@@ -403,7 +410,13 @@ function handleAdd(req: Request): Effect.Effect<Response, never, QdrantClient | 
         Schema.decodeUnknown(AddRequestSchema)(body),
         Effect.mapError((e) => new ValidationError({ message: `Validation failed: ${String(e)}` }))
       )
-    )
+    ),
+    Effect.flatMap((body) => {
+      if (!body.user_id && !body.agent_id && !body.run_id) {
+        return Effect.fail(new ValidationError({ message: "At least one of user_id, agent_id, or run_id is required" }))
+      }
+      return Effect.succeed(body)
+    })
   )
 
   const handler = pipe(
@@ -429,15 +442,17 @@ function handleAdd(req: Request): Effect.Effect<Response, never, QdrantClient | 
                         ollama.embed(fact),
                         Effect.flatMap((vector) => {
                           const id = crypto.randomUUID()
+                          const payload: Record<string, unknown> = {
+                            memory: fact,
+                            user_id: body.user_id,
+                            created_at: now,
+                          }
+                          if (body.agent_id) payload.agent_id = body.agent_id
+                          if (body.run_id) payload.run_id = body.run_id
                           return pipe(
-                            qdrant.upsertPoint(id, vector, {
-                              memory: fact,
-                              user_id: body.user_id,
-                              agent_id: body.agent_id,
-                              created_at: now,
-                            }),
+                            qdrant.upsertPoint(id, vector, payload),
                             Effect.map((): AddResult => {
-                              console.log(`[add] Stored memory ${id}: "${fact.slice(0, 60)}..."`)
+                              console.log(`[add] Stored memory ${id} user=${body.user_id} agent=${body.agent_id ?? "none"} run=${body.run_id ?? "none"}: "${fact.slice(0, 60)}..."`)
                               return { id, memory: fact, event: "ADD" }
                             })
                           )
@@ -497,11 +512,11 @@ function handleSearch(req: Request): Effect.Effect<Response, never, QdrantClient
         Effect.flatMap(OllamaClient, (ollama) => ollama.embed(body.query)),
         Effect.mapError((e): ValidationError | OllamaError | QdrantError => e),
         Effect.flatMap((vector) =>
-          Effect.flatMap(QdrantClient, (qdrant) => qdrant.searchPoints(vector, body.user_id, limit, body.agent_id))
+          Effect.flatMap(QdrantClient, (qdrant) => qdrant.searchPoints(vector, body.user_id, limit, body.agent_id, body.run_id))
         ),
         Effect.map((results) => {
           console.log(
-            `[search] query="${body.query.slice(0, 40)}" user=${body.user_id} agent=${body.agent_id ?? "all"} -> ${results.length} results`
+            `[search] query="${body.query.slice(0, 40)}" user=${body.user_id} agent=${body.agent_id ?? "all"} run=${body.run_id ?? "all"} -> ${results.length} results`
           )
           return json({ results } satisfies SearchResponse)
         })
@@ -544,11 +559,12 @@ function handleListMemories(req: Request): Effect.Effect<Response, never, Qdrant
   const userId = url.searchParams.get("user_id")
   if (!userId) return Effect.succeed(errorResponse("Missing query param: user_id"))
   const agentId = url.searchParams.get("agent_id") ?? undefined
+  const runId = url.searchParams.get("run_id") ?? undefined
 
   return pipe(
-    Effect.flatMap(QdrantClient, (qdrant) => qdrant.scrollPoints(userId, agentId)),
+    Effect.flatMap(QdrantClient, (qdrant) => qdrant.scrollPoints(userId, agentId, runId)),
     Effect.map((memories) => {
-      console.log(`[memories] Listed ${memories.length} memories for user=${userId} agent=${agentId ?? "all"}`)
+      console.log(`[memories] Listed ${memories.length} memories for user=${userId} agent=${agentId ?? "all"} run=${runId ?? "all"}`)
       return json({ memories })
     }),
     Effect.catchAll((e) => {
@@ -563,11 +579,12 @@ function handleCountMemories(req: Request): Effect.Effect<Response, never, Qdran
   const userId = url.searchParams.get("user_id")
   if (!userId) return Effect.succeed(errorResponse("Missing query param: user_id"))
   const agentId = url.searchParams.get("agent_id") ?? undefined
+  const runId = url.searchParams.get("run_id") ?? undefined
 
   return pipe(
-    Effect.flatMap(QdrantClient, (qdrant) => qdrant.countPoints(userId, agentId)),
+    Effect.flatMap(QdrantClient, (qdrant) => qdrant.countPoints(userId, agentId, runId)),
     Effect.map((count) => {
-      console.log(`[count] user=${userId} agent=${agentId ?? "all"} -> ${count} memories`)
+      console.log(`[count] user=${userId} agent=${agentId ?? "all"} run=${runId ?? "all"} -> ${count} memories`)
       return json({ count } satisfies CountResponse)
     }),
     Effect.catchAll((e) => {

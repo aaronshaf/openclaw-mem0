@@ -6,7 +6,8 @@ import type { OpenClawPluginApi } from "openclaw/plugin-sdk"
 const PluginConfig = Schema.Struct({
   url: Schema.String,
   userId: Schema.optional(Schema.String),
-  agentId: Schema.String,
+  agentId: Schema.optional(Schema.String),
+  runId: Schema.optional(Schema.String),
   autoCapture: Schema.optional(Schema.Boolean),
   autoRecall: Schema.optional(Schema.Boolean),
   topK: Schema.optional(Schema.Number),
@@ -19,7 +20,7 @@ function decodeConfig(raw: unknown): PluginConfig {
   } catch (e) {
     const msg = e instanceof Error ? e.message : String(e)
     throw new Error(
-      `openclaw-mem0: invalid plugin config. Check that 'url' (string) and 'agentId' (string) are set. Details: ${msg}`
+      `openclaw-mem0: invalid plugin config. Check that 'url' (string) is set. Details: ${msg}`
     )
   }
 }
@@ -32,6 +33,7 @@ const SearchResult = Schema.Struct({
   score: Schema.Number,
   user_id: Schema.optional(Schema.String),
   agent_id: Schema.optional(Schema.String),
+  run_id: Schema.optional(Schema.String),
 })
 
 const SearchResponse = Schema.Struct({
@@ -73,21 +75,26 @@ async function postJson(url: string, body: unknown): Promise<unknown> {
   return res.json()
 }
 
-async function mem0Search(baseUrl: string, query: string, userId: string, limit: number, agentId?: string) {
+async function mem0Search(baseUrl: string, query: string, userId: string, limit: number, agentId?: string, runId?: string) {
   const body: Record<string, unknown> = { query, user_id: userId, limit }
   if (agentId) body.agent_id = agentId
+  if (runId) body.run_id = runId
   const raw = await postJson(`${baseUrl}/search`, body)
   return decodeSearchResponse(raw).results
 }
 
-async function mem0Add(baseUrl: string, messages: string, userId: string, agentId: string) {
-  const raw = await postJson(`${baseUrl}/add`, { messages, user_id: userId, agent_id: agentId })
+async function mem0Add(baseUrl: string, messages: string, userId: string, agentId?: string, runId?: string) {
+  const body: Record<string, unknown> = { messages, user_id: userId }
+  if (agentId) body.agent_id = agentId
+  if (runId) body.run_id = runId
+  const raw = await postJson(`${baseUrl}/add`, body)
   return decodeAddResponse(raw).results
 }
 
-async function mem0Count(baseUrl: string, userId: string, agentId?: string): Promise<number> {
+async function mem0Count(baseUrl: string, userId: string, agentId?: string, runId?: string): Promise<number> {
   let countUrl = `${baseUrl}/memories/count?user_id=${encodeURIComponent(userId)}`
   if (agentId) countUrl += `&agent_id=${encodeURIComponent(agentId)}`
+  if (runId) countUrl += `&run_id=${encodeURIComponent(runId)}`
   const res = await fetch(countUrl)
   if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`)
   const raw = await res.json()
@@ -102,7 +109,7 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
   const userId = cfg.userId ?? "inst-bots"
 
   api.logger.info(
-    `openclaw-mem0: initialized (url: ${cfg.url}, user: ${userId}, agent: ${cfg.agentId}, autoRecall: ${cfg.autoRecall ?? false}, autoCapture: ${cfg.autoCapture ?? false})`
+    `openclaw-mem0: initialized (url: ${cfg.url}, user: ${userId}, agent: ${cfg.agentId ?? "none"}, runId: ${cfg.runId ?? "dynamic"}, autoRecall: ${cfg.autoRecall ?? false}, autoCapture: ${cfg.autoCapture ?? false})`
   )
 
   if (cfg.autoRecall) {
@@ -110,6 +117,7 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
       const prompt = (event as { prompt?: string }).prompt ?? ""
       if (prompt.length < 5) return {}
       try {
+        // Search by userId only for broadest cross-agent, cross-session recall
         const results = await mem0Search(cfg.url, prompt, userId, topK)
         if (results.length === 0) return {}
         const memories = results.map((r) => `- ${r.memory}`).join("\n")
@@ -128,6 +136,14 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
       if (!ev.success || !ev.messages?.length) return
       const recent = ev.messages.slice(-6).filter((m) => m.role === "user" || m.role === "assistant")
       if (recent.length === 0) return
+
+      // Extract session ID from event context for run_id tagging
+      const sessionId: string | undefined =
+        (event as any).sessionId ??
+        (event as any).session_id ??
+        (_ctx as any)?.sessionId ??
+        cfg.runId
+
       const contentToString = (content: unknown): string => {
         if (typeof content === "string") return content
         if (Array.isArray(content)) {
@@ -156,7 +172,8 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
         .filter(Boolean)
         .join("\n")
       try {
-        const results = await mem0Add(cfg.url, formatted, userId, cfg.agentId)
+        // Capture with all available identifiers: userId + agentId + runId
+        const results = await mem0Add(cfg.url, formatted, userId, cfg.agentId, sessionId)
         api.logger.info(`openclaw-mem0: captured ${results.length} memory entries`)
       } catch (err) {
         api.logger.warn(`openclaw-mem0: capture failed: ${String(err)}`)
@@ -212,8 +229,7 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
         .description("List all memories")
         .action(async () => {
           let listUrl = `${cfg.url}/memories?user_id=${userId}`
-          // List only this agent's memories by default
-          listUrl += `&agent_id=${encodeURIComponent(cfg.agentId)}`
+          if (cfg.agentId) listUrl += `&agent_id=${encodeURIComponent(cfg.agentId)}`
           const res = await fetch(listUrl).catch((e) => {
             console.error(`Error: ${String(e)}`); process.exit(1)
           })
@@ -232,8 +248,12 @@ export default async function plugin(api: OpenClawPluginApi): Promise<void> {
           const health = decodeHealthResponse(await res.json())
           console.log(`Status: ${health.status}`)
           try {
-            const count = await mem0Count(cfg.url, userId, cfg.agentId)
-            console.log(`Memories: ${count}`)
+            const total = await mem0Count(cfg.url, userId)
+            console.log(`Total memories (all agents): ${total}`)
+            if (cfg.agentId) {
+              const agentCount = await mem0Count(cfg.url, userId, cfg.agentId)
+              console.log(`Memories for agent "${cfg.agentId}": ${agentCount}`)
+            }
           } catch (e) {
             console.error(`Failed to get count: ${String(e)}`)
           }
