@@ -20,10 +20,10 @@ function makeMockQdrant(overrides: Partial<QdrantClientService> = {}): Layer.Lay
   const defaults: QdrantClientService = {
     ensureCollection: () => Effect.void,
     upsertPoint: () => Effect.void,
-    searchPoints: (_vec, _uid, _lim) => Effect.succeed([]),
+    searchPoints: (_vec, _uid, _lim, _aid?) => Effect.succeed([]),
     deletePoint: () => Effect.void,
-    scrollPoints: () => Effect.succeed([]),
-    countPoints: () => Effect.succeed(0),
+    scrollPoints: (_uid?, _aid?) => Effect.succeed([]),
+    countPoints: (_uid?, _aid?) => Effect.succeed(0),
   }
   return Layer.succeed(QdrantClient, { ...defaults, ...overrides })
 }
@@ -88,7 +88,7 @@ describe("POST /add", () => {
   test("valid body -> extracts facts, embeds, upserts, returns results", async () => {
     let upsertCalled = false
     const res = await runWithMocks(
-      handleAdd(makeReq("POST", "http://localhost/add", { messages: "User likes TypeScript", user_id: "u1" })),
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "User likes TypeScript", user_id: "u1", agent_id: "wolverine" })),
       { upsertPoint: () => { upsertCalled = true; return Effect.void } },
       { extractFacts: () => Effect.succeed(["User likes TypeScript"]) }
     )
@@ -100,23 +100,30 @@ describe("POST /add", () => {
     expect(upsertCalled).toBe(true)
   })
 
-  test("missing fields -> 400", async () => {
+  test("missing messages field -> 400", async () => {
     const res = await runWithMocks(
-      handleAdd(makeReq("POST", "http://localhost/add", { user_id: "u1" }))
+      handleAdd(makeReq("POST", "http://localhost/add", { user_id: "u1", agent_id: "wolverine" }))
+    )
+    expect(res.status).toBe(400)
+  })
+
+  test("missing agent_id -> 400", async () => {
+    const res = await runWithMocks(
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "hello", user_id: "u1" }))
     )
     expect(res.status).toBe(400)
   })
 
   test("messages too long -> 400", async () => {
     const res = await runWithMocks(
-      handleAdd(makeReq("POST", "http://localhost/add", { messages: "x".repeat(50_001), user_id: "u1" }))
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "x".repeat(50_001), user_id: "u1", agent_id: "wolverine" }))
     )
     expect(res.status).toBe(400)
   })
 
   test("LLM fails -> falls back to raw message", async () => {
     const res = await runWithMocks(
-      handleAdd(makeReq("POST", "http://localhost/add", { messages: "hello world", user_id: "u1" })),
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "hello world", user_id: "u1", agent_id: "wolverine" })),
       {},
       { extractFacts: (msg) => Effect.succeed([msg.slice(0, 500)]) }
     )
@@ -129,7 +136,7 @@ describe("POST /add", () => {
   test("partial failure includes failed count", async () => {
     let callCount = 0
     const res = await runWithMocks(
-      handleAdd(makeReq("POST", "http://localhost/add", { messages: "stuff", user_id: "u1" })),
+      handleAdd(makeReq("POST", "http://localhost/add", { messages: "stuff", user_id: "u1", agent_id: "wolverine" })),
       {
         upsertPoint: () => {
           callCount++
@@ -151,7 +158,7 @@ describe("POST /search", () => {
       handleSearch(makeReq("POST", "http://localhost/search", { query: "typescript", user_id: "u1" })),
       {
         searchPoints: () =>
-          Effect.succeed([{ id: "1", memory: "User likes TS", score: 0.9, user_id: "u1" }]),
+          Effect.succeed([{ id: "1", memory: "User likes TS", score: 0.9, user_id: "u1", agent_id: "wolverine" }]),
       }
     )
     expect(res.status).toBe(200)
@@ -160,11 +167,41 @@ describe("POST /search", () => {
     expect(data.results[0].memory).toBe("User likes TS")
   })
 
-  test("missing fields -> 400", async () => {
+  test("missing query -> 400", async () => {
     const res = await runWithMocks(
       handleSearch(makeReq("POST", "http://localhost/search", { user_id: "u1" }))
     )
     expect(res.status).toBe(400)
+  })
+
+  test("with agent_id -> passes to searchPoints", async () => {
+    let receivedAgentId: string | undefined
+    const res = await runWithMocks(
+      handleSearch(makeReq("POST", "http://localhost/search", { query: "ts", user_id: "u1", agent_id: "panda" })),
+      {
+        searchPoints: (_vec, _uid, _lim, aid) => {
+          receivedAgentId = aid
+          return Effect.succeed([])
+        },
+      }
+    )
+    expect(res.status).toBe(200)
+    expect(receivedAgentId).toBe("panda")
+  })
+
+  test("without agent_id -> searches across all agents", async () => {
+    let receivedAgentId: string | undefined
+    const res = await runWithMocks(
+      handleSearch(makeReq("POST", "http://localhost/search", { query: "ts", user_id: "u1" })),
+      {
+        searchPoints: (_vec, _uid, _lim, aid) => {
+          receivedAgentId = aid
+          return Effect.succeed([])
+        },
+      }
+    )
+    expect(res.status).toBe(200)
+    expect(receivedAgentId).toBeUndefined()
   })
 
   test("query too long -> 400", async () => {
@@ -203,7 +240,7 @@ describe("GET /memories", () => {
       handleListMemories(makeReq("GET", "http://localhost/memories?user_id=foo")),
       {
         scrollPoints: () =>
-          Effect.succeed([{ id: "1", memory: "m1", user_id: "foo" }]),
+          Effect.succeed([{ id: "1", memory: "m1", user_id: "foo", agent_id: "panda" }]),
       }
     )
     expect(res.status).toBe(200)
@@ -216,6 +253,21 @@ describe("GET /memories", () => {
       handleListMemories(makeReq("GET", "http://localhost/memories"))
     )
     expect(res.status).toBe(400)
+  })
+
+  test("with agent_id -> passes to scrollPoints", async () => {
+    let receivedAgentId: string | undefined
+    const res = await runWithQdrant(
+      handleListMemories(makeReq("GET", "http://localhost/memories?user_id=foo&agent_id=panda")),
+      {
+        scrollPoints: (_uid, aid) => {
+          receivedAgentId = aid
+          return Effect.succeed([])
+        },
+      }
+    )
+    expect(res.status).toBe(200)
+    expect(receivedAgentId).toBe("panda")
   })
 })
 

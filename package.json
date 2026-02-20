@@ -3,6 +3,7 @@
   "private": true,
   "workspaces": ["plugin", "server"],
   "scripts": {
-    "test": "cd plugin && npm test"
+    "test": "cd server && bun test",
+    "test:all": "cd server && bun test && cd ../plugin && bun test"
   }
 }

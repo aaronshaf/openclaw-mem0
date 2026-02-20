@@ -3,6 +3,7 @@
 export interface SearchRequest {
   query: string
   user_id: string
+  agent_id?: string
   limit?: number
 }
 
@@ -11,6 +12,7 @@ export interface SearchResult {
   memory: string
   score: number
   user_id?: string
+  agent_id?: string
 }
 
 export interface SearchResponse {
@@ -20,6 +22,7 @@ export interface SearchResponse {
 export interface AddRequest {
   messages: string
   user_id: string
+  agent_id: string
 }
 
 export interface AddResult {
@@ -46,6 +49,7 @@ export interface Memory {
   id: string
   memory: string
   user_id?: string
+  agent_id?: string
   created_at?: string
   updated_at?: string
 }
