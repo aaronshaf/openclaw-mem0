@@ -2,6 +2,8 @@
 
 A monorepo providing persistent memory for [openclaw](https://openclaw.dev) agents via Qdrant + Ollama.
 
+Inspired by [mem0ai/mem0 server](https://github.com/mem0ai/mem0/tree/main/server).
+
 ## Architecture
 
 ```
